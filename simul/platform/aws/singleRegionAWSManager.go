@@ -1,0 +1,168 @@
+package aws
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
+)
+
+type singleRegionAWSManager struct {
+	region    string
+	svc       *ec2.EC2
+	instances []Instance
+}
+
+const RnDTag = "R&D"
+
+const RnDMasterTag = "R&D_master"
+
+//var instanceTags = []string{"R&D", "R&D_master"}
+
+//NewAWS creates AWS manager for single region
+func NewAWS(region string) Manager {
+	sess := awsSession(region)
+	// Create EC2 service client
+	svc := ec2.New(sess)
+
+	awsM := &singleRegionAWSManager{
+		region: region,
+		svc:    svc,
+	}
+
+	_, err := awsM.refreshInstances()
+	if err != nil {
+		panic(err)
+	}
+	return awsM
+}
+
+func awsSession(region string) *session.Session {
+	sess, err := session.NewSession(&aws.Config{
+		Region: aws.String(region)},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return sess
+}
+
+//Blocks untill all avaliable instances are running
+func (a *singleRegionAWSManager) allInstancesRunningBlock() {
+	for {
+		instances, err := a.refreshInstances()
+		if err != nil {
+			panic(err)
+		}
+
+		okInstances := 0
+		for _, inst := range instances {
+			if (*inst.State) == "running" {
+				okInstances++
+				if okInstances >= len(instances) {
+					return
+				}
+			}
+		}
+		fmt.Println("Waiting for amazon instances to start")
+		time.Sleep(20 * time.Second)
+	}
+}
+
+//refreshes list of aws instances
+func (a *singleRegionAWSManager) refreshInstances() ([]Instance, error) {
+	var awsTags []*string
+	for _, tag := range []string{RnDTag, RnDMasterTag} {
+		awsTags = append(awsTags, aws.String(tag))
+	}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{
+			&ec2.Filter{
+				Name:   aws.String("tag:Name"),
+				Values: awsTags,
+			},
+		},
+	}
+	result, err := a.svc.DescribeInstances(input)
+	if err != nil {
+		return nil, err
+	}
+
+	var instances []Instance
+	for _, reservation := range result.Reservations {
+		for _, i := range reservation.Instances {
+			id := i.InstanceId
+			state := i.State.Name
+			pubIP := i.PublicIpAddress
+			for _, tag := range i.Tags {
+				if *tag.Value == RnDTag || *tag.Value == RnDMasterTag {
+					inst := Instance{id, pubIP, state, a.region, *tag.Value}
+					instances = append(instances, inst)
+					//		fmt.Println(*id, *pubIP)
+				}
+			}
+		}
+	}
+	a.instances = instances
+	return instances, nil
+}
+
+func (a *singleRegionAWSManager) Instances() []Instance {
+	return a.instances
+}
+
+func (a *singleRegionAWSManager) StartInstances() error {
+	// We set DryRun to true to check to see if the instance exists and we have the
+	// necessary permissions to monitor the instance.
+	instanceIds := instanceToInstanceID(a.instances)
+	input := &ec2.StartInstancesInput{
+		InstanceIds: instanceIds,
+		DryRun:      aws.Bool(true),
+	}
+
+	_, err := a.svc.StartInstances(input)
+	awsErr, ok := err.(awserr.Error)
+
+	// If the error code is `DryRunOperation` it means we have the necessary
+	// permissions to Start this instance
+	if ok && awsErr.Code() == "DryRunOperation" {
+		// Let's now set dry run to be false. This will allow us to start the instances
+		input.DryRun = aws.Bool(false)
+		_, err = a.svc.StartInstances(input)
+		if err != nil {
+			return err
+		}
+		a.allInstancesRunningBlock()
+		return nil
+	}
+	// This could be due to a lack of permissions
+	return err
+}
+
+// TODO extract common logic with StartInstances:
+// stopInstances and startInstances have identical structure,
+// unfortunetly the types involwed are diffrent
+// (StopInstancesInput / StartInstancesInput) this makes refactoring trickier
+func (a *singleRegionAWSManager) StopInstances() error {
+	instanceIds := instanceToInstanceID(a.instances)
+	input := &ec2.StopInstancesInput{
+		InstanceIds: instanceIds,
+		DryRun:      aws.Bool(true),
+	}
+
+	_, err := a.svc.StopInstances(input)
+	awsErr, ok := err.(awserr.Error)
+	if ok && awsErr.Code() == "DryRunOperation" {
+		input.DryRun = aws.Bool(false)
+		_, err = a.svc.StopInstances(input)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return err
+}

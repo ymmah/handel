@@ -17,11 +17,16 @@ import (
 var configFlag = flag.String("config", "", "TOML encoded config file")
 var platformFlag = flag.String("platform", "", "name of the platform to run on")
 var runTimeout = flag.Duration("run-timeout", 2*time.Minute, "timeout of a given run")
+var pemFile = flag.String("pemFile", "", "location of the .pem file for EC2 ssh")
 
 func main() {
 	flag.Parse()
+
+	parameters := make(map[string]string)
+	parameters["pemFile"] = *pemFile
+
 	c := lib.LoadConfig(*configFlag)
-	plat := platform.NewPlatform(*platformFlag)
+	plat := platform.NewPlatform(*platformFlag, parameters)
 	if err := plat.Configure(c); err != nil {
 		panic(err)
 	}
