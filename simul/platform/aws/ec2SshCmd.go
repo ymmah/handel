@@ -30,7 +30,7 @@ func NewSSHClient(pemBytes []byte, host string, user string) (CMD, error) {
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
-	fmt.Println("connecting to: ", sshHost)
+
 	conn, err := ssh.Dial("tcp", sshHost, config)
 	if err != nil {
 		return nil, err
@@ -58,7 +58,6 @@ func (sshCMD *sshCMD) CopyFiles(files []string) error {
 
 func copyFile(sftpClient *sftp.Client, file string) error {
 	// create destination file
-	fmt.Println("Copy:", file)
 	dstFile, err := sftpClient.Create(file)
 
 	if err != nil {

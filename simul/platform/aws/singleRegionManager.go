@@ -20,6 +20,8 @@ const RnDTag = "R&D"
 
 const RnDMasterTag = "R&D_master"
 
+const running = "running"
+
 //var instanceTags = []string{"R&D", "R&D_master"}
 
 //NewAWS creates AWS manager for single region
@@ -33,7 +35,7 @@ func NewAWS(region string) Manager {
 		svc:    svc,
 	}
 
-	_, err := awsM.refreshInstances()
+	_, err := awsM.RefreshInstances()
 	if err != nil {
 		panic(err)
 	}
@@ -50,30 +52,8 @@ func awsSession(region string) *session.Session {
 	return sess
 }
 
-//Blocks untill all avaliable instances are running
-func (a *singleRegionAWSManager) allInstancesRunningBlock() {
-	for {
-		instances, err := a.refreshInstances()
-		if err != nil {
-			panic(err)
-		}
-
-		okInstances := 0
-		for _, inst := range instances {
-			if (*inst.State) == "running" {
-				okInstances++
-				if okInstances >= len(instances) {
-					return
-				}
-			}
-		}
-		fmt.Println("Waiting for amazon instances to start")
-		time.Sleep(20 * time.Second)
-	}
-}
-
 //refreshes list of aws instances
-func (a *singleRegionAWSManager) refreshInstances() ([]Instance, error) {
+func (a *singleRegionAWSManager) RefreshInstances() ([]Instance, error) {
 	var awsTags []*string
 	for _, tag := range []string{RnDTag, RnDMasterTag} {
 		awsTags = append(awsTags, aws.String(tag))
@@ -136,7 +116,14 @@ func (a *singleRegionAWSManager) StartInstances() error {
 		if err != nil {
 			return err
 		}
-		a.allInstancesRunningBlock()
+		_, err := WaitUntilAllInstancesRunning(a, func() {
+			fmt.Println("Waiting for amazon instances to start")
+			time.Sleep(20 * time.Second)
+
+		})
+		if err != nil {
+			return nil
+		}
 		return nil
 	}
 	// This could be due to a lack of permissions

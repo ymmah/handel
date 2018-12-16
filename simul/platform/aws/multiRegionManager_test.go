@@ -8,7 +8,6 @@ import (
 )
 
 const stopped = "stopped"
-const running = "running"
 
 type mockSingleRegionManager struct {
 	instances []Instance
@@ -33,6 +32,10 @@ func (a *mockSingleRegionManager) StopInstances() error {
 	return nil
 }
 
+func (a *mockSingleRegionManager) RefreshInstances() ([]Instance, error) {
+	return a.instances, nil
+}
+
 func newMultiRegionAWSManager() Manager {
 	return &multiRegionAWSManager{}
 }
@@ -53,7 +56,7 @@ func makeManager(n int, reg string) Manager {
 	}
 }
 
-func TestMultiRegionManager(t *testing.T) {
+func newMockManager() (Manager, map[string]int) {
 	regMap := make(map[string]int)
 	reg1 := "us-east-1"
 	regMap[reg1] = 3
@@ -67,28 +70,37 @@ func TestMultiRegionManager(t *testing.T) {
 	m3 := makeManager(regMap[reg3], reg3)
 
 	manager := multiRegionAWSManager{[]Manager{m1, m2, m3}}
+	return &manager, regMap
+}
 
-	for _, inst := range manager.Instances() {
+func TestMultiRegionManager(t *testing.T) {
+	manager, regMap := newMockManager()
+	freshInstances, _ := manager.RefreshInstances()
+	for _, inst := range freshInstances {
 		require.Equal(t, *inst.State, stopped)
 	}
 
 	manager.StopInstances()
-	for _, inst := range manager.Instances() {
+	freshInstances, _ = manager.RefreshInstances()
+	for _, inst := range freshInstances {
 		require.Equal(t, *inst.State, stopped)
 	}
 
 	manager.StartInstances()
-	for _, inst := range manager.Instances() {
+	freshInstances, _ = manager.RefreshInstances()
+	for _, inst := range freshInstances {
 		require.Equal(t, *inst.State, running)
 	}
 
 	manager.StartInstances()
-	for _, inst := range manager.Instances() {
+	freshInstances, _ = manager.RefreshInstances()
+	for _, inst := range freshInstances {
 		require.Equal(t, *inst.State, running)
 	}
 
 	manager.StopInstances()
-	for _, inst := range manager.Instances() {
+	freshInstances, _ = manager.RefreshInstances()
+	for _, inst := range freshInstances {
 		require.Equal(t, *inst.State, stopped)
 	}
 
@@ -98,5 +110,25 @@ func TestMultiRegionManager(t *testing.T) {
 
 	for _, v := range regMap {
 		require.Equal(t, v, 0)
+	}
+}
+
+func TestAllInstancesRunningBlock(t *testing.T) {
+	manager, _ := newMockManager()
+	k := 0
+	x := &k
+	delay := func() {
+		*x = *x + 1
+		if *x >= 3 {
+			manager.StartInstances()
+		}
+	}
+	tr, err := WaitUntilAllInstancesRunning(manager, delay)
+	require.Nil(t, err)
+	require.Equal(t, tr, *x)
+
+	insances := manager.Instances()
+	for _, inst := range insances {
+		require.Equal(t, *inst.State, running)
 	}
 }

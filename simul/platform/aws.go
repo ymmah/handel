@@ -44,15 +44,14 @@ func (a *awsPlatform) pack(path string, c *lib.Config, binPath string) error {
 	//GOOS=linux GOARCH=amd64 go build
 	//os.Setenv("GOOS", a.targetSystem)
 	//os.Setenv("GOARCH", a.targetArch)
-	os.Setenv("GOOS", "linux")
-	os.Setenv("GOARCH", "amd64")
+	os.Setenv("GOOS", a.targetSystem)
+	os.Setenv("GOARCH", a.targetArch)
 	cmd := NewCommand("go", "build", "-o", binPath, path)
 
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Run(); err != nil {
 		fmt.Println("stdout -> " + cmd.ReadAll())
 		return err
 	}
-
 	return nil
 }
 
@@ -72,7 +71,9 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 		return err
 	}
 
-	a.aws.StartInstances()
+	if err := a.aws.StartInstances(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -86,30 +87,42 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 	allAwsInstances := a.aws.Instances()
 	nbOfInstances := len(allAwsInstances)
 
-	if r.Nodes > nbOfInstances {
+	if r.Nodes+1 > nbOfInstances {
 		msg := fmt.Sprintf(`Not enough EC2 instances, number of nodes to sart: %d
-            , number of EC2 instances: %d`, r.Nodes, nbOfInstances)
+            , number of avaliable EC2 instances: %d`, r.Nodes+1, nbOfInstances)
 		return errors.New(msg)
 	}
-	masterInstance, slaveInstances := makeMasterAndSlaves(allAwsInstances)
+
+	masterInstance, slaveInstances, err := makeMasterAndSlaves(allAwsInstances)
+	if err != nil {
+		return nil
+	}
 	masterAddr := aws.GenRemoteAddress(*masterInstance.PublicIP, 5000)
 
 	fmt.Println("[+] Master Instances")
-	fmt.Println("	[-] Instance ", *masterInstance.ID, *masterInstance.State, masterAddr)
-
+	fmt.Println("	 [-] Instance ", *masterInstance.ID, *masterInstance.State, masterAddr)
+	fmt.Println()
 	fmt.Println("[+] Avaliable Slave Instances:")
 	for i, inst := range slaveInstances {
-		fmt.Println("	[-] Instance ", i, *inst.ID, *inst.State, *inst.PublicIP)
+		fmt.Println("	 [-] Instance ", i, *inst.ID, *inst.State, *inst.PublicIP)
 	}
 
-	//Copy master binary to master instance
+	// ++++++++++Copy master binary to master instance
+
+	// a) Copy all files to master
+	// b) Setup NFS on master
+	// c) Start master
+	// d) Setup NFS on slaves
+	// e) copy files on slaves
+	// f) start slaves
+
 	log := "log.txt"
 	masterCommand := "nohup " + a.binMasterPath + " -masterAddr " + masterAddr + " -nbOfNodes " + strconv.Itoa(len(slaveInstances))
 	fullCMD := "chmod 777 " + a.binMasterPath + " && " + masterCommand + " > " + log
+
 	fmt.Println("[+] >>>>>>> Master Command", fullCMD)
-	err := a.runNode(masterAddr, fullCMD, a.binMasterPath)
-	if err != nil {
-		panic(err)
+	if err := a.runNode(masterAddr, fullCMD, a.binMasterPath); err != nil {
+		return err
 	}
 
 	// 1. Generate & write the registry file
@@ -146,8 +159,6 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 }
 
 func (a *awsPlatform) runNode(addr, cmd string, files ...string) error {
-
-	fmt.Println("RUN NODE", addr)
 	awsClient, err := aws.NewSSHClient(a.pemBytes, addr, a.user)
 	if err != nil {
 		return err
@@ -162,14 +173,14 @@ func cmdToString(cmd []string) string {
 	return strings.Join(cmd[:], " ")
 }
 
-func makeMasterAndSlaves(allAwsInstances []aws.Instance) (aws.Instance, []aws.Instance) {
+func makeMasterAndSlaves(allAwsInstances []aws.Instance) (*aws.Instance, []aws.Instance, error) {
 	var masterInstance aws.Instance
 	var slaveInstances []aws.Instance
 	nbOfMasterIns := 0
 	for _, inst := range allAwsInstances {
 		if inst.Tag == aws.RnDMasterTag {
 			if nbOfMasterIns > 1 {
-				panic("More than one Master instance avaliable")
+				return nil, nil, errors.New("More than one Master instance avaliable")
 			}
 			masterInstance = inst
 			nbOfMasterIns++
@@ -177,5 +188,5 @@ func makeMasterAndSlaves(allAwsInstances []aws.Instance) (aws.Instance, []aws.In
 			slaveInstances = append(slaveInstances, inst)
 		}
 	}
-	return masterInstance, slaveInstances
+	return &masterInstance, slaveInstances, nil
 }

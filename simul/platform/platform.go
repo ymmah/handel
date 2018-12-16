@@ -62,10 +62,11 @@ func NewPlatform(t string, parameters map[string]string) Platform {
 		p = NewLocalhost()
 	case amazonAWS:
 		awsManager := aws.NewMultiRegionAWSManager(regions)
-		p = NewAws(
-			awsManager,
-			parameters["pemFile"],
-		)
+		pemFile, ok := parameters["pemFile"]
+		if !ok {
+			panic("pemFile file is missing")
+		}
+		p = NewAws(awsManager, pemFile)
 
 	default:
 		panic("no platform of this name " + t)

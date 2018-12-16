@@ -22,10 +22,21 @@ func (a *multiRegionAWSManager) Instances() []Instance {
 	return instances
 }
 
+func (a *multiRegionAWSManager) RefreshInstances() ([]Instance, error) {
+	var instances []Instance
+	for _, m := range a.managers {
+		sigRerIns, err := m.RefreshInstances()
+		if err != nil {
+			return nil, err
+		}
+		instances = append(instances, sigRerIns...)
+	}
+	return instances, nil
+}
+
 func (a *multiRegionAWSManager) StartInstances() error {
 	for _, m := range a.managers {
-		err := m.StartInstances()
-		if err != nil {
+		if err := m.StartInstances(); err != nil {
 			return err
 		}
 	}
@@ -34,8 +45,7 @@ func (a *multiRegionAWSManager) StartInstances() error {
 
 func (a *multiRegionAWSManager) StopInstances() error {
 	for _, m := range a.managers {
-		err := m.StopInstances()
-		if err != nil {
+		if err := m.StopInstances(); err != nil {
 			return err
 		}
 	}

@@ -22,6 +22,7 @@ type Manager interface {
 	// Instances list avaliable instances in any state
 	Instances() []Instance
 	// StartInstances starts all avaliable instances
+	RefreshInstances() ([]Instance, error)
 	StartInstances() error
 	// StopInstances stops all avaliable instances
 	StopInstances() error
@@ -54,4 +55,40 @@ func instanceToInstanceID(instances []Instance) []*string {
 		ids = append(ids, inst.ID)
 	}
 	return ids
+}
+
+func WaitUntilAllInstancesRunning(a Manager, delay func()) (int, error) {
+	allRunning := allInstancesRunning(a.Instances())
+	if allRunning {
+		return 0, nil
+	}
+	trais := 0
+
+	for {
+		trais++
+		delay()
+		fmt.Println("Waiting for amazon instances to start")
+
+		allInstances, err := a.RefreshInstances()
+		if err != nil {
+			return trais, err
+		}
+		allRunning = allInstancesRunning(allInstances)
+		if allRunning {
+			return trais, nil
+		}
+	}
+}
+
+func allInstancesRunning(instances []Instance) bool {
+	okInstances := 0
+	for _, inst := range instances {
+		if (*inst.State) == running {
+			okInstances++
+			if okInstances >= len(instances) {
+				return true
+			}
+		}
+	}
+	return false
 }
