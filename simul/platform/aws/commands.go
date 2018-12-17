@@ -5,20 +5,51 @@ import (
 	"strings"
 )
 
-// NodeController represents avaliable operations to perform on a remote host
-type NodeController interface {
-	// CopyFiles copies files to equivalent location in a remote host
-	// for example "/tmp/aws.csv" from localhost will be placed in
-	// "/tmp/aws.csv" on the remote host
-	CopyFiles(files []string) error
-	// Run runs commands, for example Run("ls -l")
-	Run(command string) (string, error)
-	Start(command string) (string, error)
-	Init() error
-	// Close
-	Close()
+type Commands struct {
+	masterBinPath string
+	slaveBinPath  string
+	confPath      string
+	regPath       string
+	sharedDir     string
 }
 
+func NewCommands(masterBinPath, slaveBinPath, confPath, regPath string) Commands {
+	sharedDir := "$HOME/sharedDir"
+	return Commands{
+		masterBinPath: masterBinPath,
+		slaveBinPath:  slaveBinPath,
+		confPath:      confPath,
+		regPath:       regPath,
+		sharedDir:     sharedDir,
+	}
+}
+
+func (c Commands) ConfifureMaster() map[int]string {
+	cmds := make(map[int]string)
+	cmds[0] = "sudo apt-get install nfs-kernel-server"
+	cmds[1] = "sudo service nfs-kernel-server start"
+	cmds[2] = "mkdir -p " + c.sharedDir
+	cmds[3] = "sudo chmod 777 /etc/exports"
+	cmds[4] = "cat /etc/exports" // *(rw,no_subtree_check,no_root_squash,sync,insecure) > /etc/exports"
+	cmds[5] = "cp " + c.masterBinPath + " " + c.sharedDir
+	cmds[6] = "cp " + c.slaveBinPath + " " + c.sharedDir
+	cmds[7] = "cp " + c.confPath + " " + c.sharedDir
+	cmds[8] = "sudo service nfs-kernel-server reload"
+	return cmds
+}
+
+func (c Commands) CpyToSharedDir() map[int]string {
+	cmds := make(map[int]string)
+	cmds[0] = "cp " + c.regPath + " " + c.sharedDir
+	cmds[1] = "chmod 777 " + c.masterBinPath
+	return cmds
+}
+
+func (c Commands) MsterStart(masterAddr string, nbOfNodes int) string {
+	return "nohup " + c.masterBinPath + " -masterAddr " + masterAddr + " -nbOfNodes " + strconv.Itoa(nbOfNodes) + " > log.txt"
+}
+
+/*
 func MasterConfig(masterBin, slaveBin, confPath string) map[int]string {
 	cmds := make(map[int]string)
 	sharedDir := "$HOME/sharedDir"
@@ -45,7 +76,7 @@ func MsterRun(masterBin, regPath, masterAddr string, nbOfNodes int) map[int]stri
 func MsterStart(masterBin, regPath, masterAddr string, nbOfNodes int) string {
 	return "nohup " + masterBin + " -masterAddr " + masterAddr + " -nbOfNodes " + strconv.Itoa(nbOfNodes) + " > log.txt"
 
-}
+}*/
 
 func SlaveConfig(masterAddr, masterBin, slaveBin, confPath string) map[int]string {
 	cmds := make(map[int]string)

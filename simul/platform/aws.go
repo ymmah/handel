@@ -28,6 +28,7 @@ type awsPlatform struct {
 	slaveNodes    []*aws.SshCMD
 	addresses     []string
 	masterAddr    string
+	CMDS          aws.Commands
 }
 
 func NewAws(aws aws.Manager, pemFile string) Platform {
@@ -64,6 +65,8 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 	a.binMasterPath = "/tmp/masterAWS"
 	a.confPath = "/tmp/aws.conf"
 
+	CMDS := aws.NewCommands(a.binMasterPath, a.binPath, a.confPath, a.regPath)
+	a.CMDS = CMDS
 	// Compile binaries
 	a.pack("github.com/ConsenSys/handel/simul/node", c, a.binPath)
 	a.pack("github.com/ConsenSys/handel/simul/master", c, a.binMasterPath)
@@ -92,16 +95,11 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 	}
 	a.masterAddr = masterAddr
 	a.master = master
-	//	time.Sleep(30 * time.Second)
-	/*	if err := master.Init(); err != nil {
-		fmt.Println("Init failed", err, *masterInstance.ID, *masterInstance.PublicIP, *masterInstance.State)
-		return err
-	}*/
 
 	for {
 		err := master.Init()
 		if err != nil {
-			fmt.Println("Init failed", err, *masterInstance.ID, *masterInstance.PublicIP, *masterInstance.State)
+			fmt.Println("Master Init failed, trying one more time", err, *masterInstance.ID, *masterInstance.PublicIP, *masterInstance.State)
 			time.Sleep(3 * time.Second)
 			continue
 		}
@@ -119,7 +117,7 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 
 	fmt.Println("[+] Transfering files to Master:", a.binMasterPath, a.binPath, a.confPath)
 	master.CopyFiles(a.binMasterPath, a.binPath, a.confPath)
-	cmds := aws.MasterConfig(a.binMasterPath, a.binPath, a.confPath)
+	cmds := CMDS.ConfifureMaster()
 	//	cmdStr := aws.CMDMapToString(cmds)
 
 	fmt.Println("[+] Configuring Master")
@@ -174,14 +172,17 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 
 	cons := a.c.NewConstructor()
 	parser := lib.NewCSVParser()
+	//TODO limit
+	// take addr form slaves and create Node
+	// set node and Node in slave
 	nodes := lib.GenerateNodes(cons, a.addresses)
 	lib.WriteAll(nodes, parser, a.regPath)
 	fmt.Println("[+] Registry file written to local storage(", r.Nodes, " nodes)")
 	fmt.Println("[+] Transfering registry file to Master")
 	a.master.CopyFiles(a.regPath)
-	cmds := aws.MsterRun(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
+	cmds := a.CMDS.CpyToSharedDir() //aws.MsterRun(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
 
-	fmt.Println("[+] Master starting:")
+	fmt.Println("[+] Master handel node:")
 	for i := 0; i < len(cmds); i++ {
 		fmt.Println("       Exec:", i, cmds[i])
 		_, err := a.master.Run(cmds[i])
@@ -190,7 +191,7 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 		}
 	}
 
-	cmd := aws.MsterStart(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
+	cmd := a.CMDS.MsterStart(a.masterAddr, len(nodes)) //aws.MsterStart(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
 	fmt.Println("       Exec:", len(cmds)+1, cmd)
 	a.master.Start(cmd)
 

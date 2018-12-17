@@ -11,16 +11,18 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+//TODO put handel Node here
 type SshCMD struct {
-	client  *ssh.Client
-	sshHost string
-	config  *ssh.ClientConfig
-	Sync    string
+	client         *ssh.Client
+	sshHost        string
+	HandelNodeAddr string
+	config         *ssh.ClientConfig
+	Sync           string
 }
 
 // NewSSHClient creates CMD backed by ssh
-func NewSSHNodeContlorrer(pemBytes []byte, host string, user string, sync string) (*SshCMD, error) {
-	sshHost, err := sshHostAddr(host)
+func NewSSHNodeContlorrer(pemBytes []byte, handelNodeAddr, user, sync string) (*SshCMD, error) {
+	sshHost, err := sshHostAddr(handelNodeAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +36,7 @@ func NewSSHNodeContlorrer(pemBytes []byte, host string, user string, sync string
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	return &SshCMD{sshHost: sshHost, config: config, Sync: sync}, nil
+	return &SshCMD{sshHost: sshHost, config: config, HandelNodeAddr: handelNodeAddr, Sync: sync}, nil
 }
 
 func (sshCMD *SshCMD) Init() error {

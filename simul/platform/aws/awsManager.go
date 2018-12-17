@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-//Instance reprezents EC2 Amazon instance
+//Instance represents EC2 Amazon instance
 type Instance struct {
 	// EC2 ID
 	ID *string
@@ -12,17 +12,20 @@ type Instance struct {
 	PublicIP *string
 	// State: running, pending, stopped
 	State *string
-	//AWS region
+	//EC2 Instance region
 	region string
-	Tag    string
+	// EC2 Instance TAG
+	Tag string
 }
 
 //Manager manages group of EC2 instances
 type Manager interface {
-	// Instances list avaliable instances in any state
+	// Instances lists avaliable instances in any state
 	Instances() []Instance
+	// RefreshInstances populates the instance list and updates instances status
 	RefreshInstances() ([]Instance, error)
-	// StartInstances starts all avaliable instances
+	// StartInstances starts all avaliable instances and populates the instance list,
+	// blocks until all instances are in "running" state
 	StartInstances() error
 	// StopInstances stops all avaliable instances
 	StopInstances() error
@@ -30,7 +33,7 @@ type Manager interface {
 
 const base = 3000
 
-// GenRemoteAddresses  generates n * 2 addresses: one for handel, one for the sync
+// GenRemoteAddresses generates n * 2 addresses: one for handel, one for the sync
 func GenRemoteAddresses(instances []Instance) ([]string, []string) {
 	n := len(instances)
 	var addresses = make([]string, 0, n)
@@ -44,26 +47,20 @@ func GenRemoteAddresses(instances []Instance) ([]string, []string) {
 	return addresses, syncs
 }
 
+// GenRemoteAddress generates Node address
 func GenRemoteAddress(ip string, port int) string {
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	return addr
 }
 
-func instanceToInstanceID(instances []Instance) []*string {
-	var ids []*string
-	for _, inst := range instances {
-		ids = append(ids, inst.ID)
-	}
-	return ids
-}
-
+// WaitUntilAllInstancesRunning blocks until all instances are
+// in the "running" state
 func WaitUntilAllInstancesRunning(a Manager, delay func()) (int, error) {
 	allRunning := allInstancesRunning(a.Instances())
 	if allRunning {
 		return 0, nil
 	}
 	tries := 0
-
 	for {
 		tries++
 		delay()
@@ -89,4 +86,12 @@ func allInstancesRunning(instances []Instance) bool {
 		}
 	}
 	return false
+}
+
+func instanceToInstanceID(instances []Instance) []*string {
+	var ids []*string
+	for _, inst := range instances {
+		ids = append(ids, inst.ID)
+	}
+	return ids
 }
