@@ -119,10 +119,9 @@ func (a *singleRegionAWSManager) StartInstances() error {
 		_, err := WaitUntilAllInstancesRunning(a, func() {
 			fmt.Println("Waiting for amazon instances to start")
 			time.Sleep(20 * time.Second)
-
 		})
 		if err != nil {
-			return nil
+			return err
 		}
 		return nil
 	}

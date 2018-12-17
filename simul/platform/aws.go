@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ConsenSys/handel/simul/lib"
 	"github.com/ConsenSys/handel/simul/platform/aws"
@@ -24,6 +24,10 @@ type awsPlatform struct {
 	targetArch    string
 	user          string
 	pemBytes      []byte
+	master        *aws.SshCMD
+	slaveNodes    []*aws.SshCMD
+	addresses     []string
+	masterAddr    string
 }
 
 func NewAws(aws aws.Manager, pemFile string) Platform {
@@ -42,8 +46,6 @@ func NewAws(aws aws.Manager, pemFile string) Platform {
 func (a *awsPlatform) pack(path string, c *lib.Config, binPath string) error {
 	// Compile binaries
 	//GOOS=linux GOARCH=amd64 go build
-	//os.Setenv("GOOS", a.targetSystem)
-	//os.Setenv("GOARCH", a.targetArch)
 	os.Setenv("GOOS", a.targetSystem)
 	os.Setenv("GOARCH", a.targetArch)
 	cmd := NewCommand("go", "build", "-o", binPath, path)
@@ -71,8 +73,86 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 		return err
 	}
 
+	//Start EC2 instances
 	if err := a.aws.StartInstances(); err != nil {
 		return err
+	}
+
+	masterInstance, slaveInstances, err := makeMasterAndSlaves(a.aws.Instances())
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	masterAddr := aws.GenRemoteAddress(*masterInstance.PublicIP, 5000)
+	master, err := aws.NewSSHNodeContlorrer(a.pemBytes, masterAddr, a.user, "")
+
+	if err != nil {
+		return err
+	}
+	a.masterAddr = masterAddr
+	a.master = master
+	//	time.Sleep(30 * time.Second)
+	/*	if err := master.Init(); err != nil {
+		fmt.Println("Init failed", err, *masterInstance.ID, *masterInstance.PublicIP, *masterInstance.State)
+		return err
+	}*/
+
+	for {
+		err := master.Init()
+		if err != nil {
+			fmt.Println("Init failed", err, *masterInstance.ID, *masterInstance.PublicIP, *masterInstance.State)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		break
+	}
+
+	fmt.Println("[+] Master Instances")
+	fmt.Println("	 [-] Instance ", *masterInstance.ID, *masterInstance.State, masterAddr)
+	fmt.Println()
+	fmt.Println("[+] Avaliable Slave Instances:")
+
+	for i, inst := range slaveInstances {
+		fmt.Println("	 [-] Instance ", i, *inst.ID, *inst.State, *inst.PublicIP)
+	}
+
+	fmt.Println("[+] Transfering files to Master:", a.binMasterPath, a.binPath, a.confPath)
+	master.CopyFiles(a.binMasterPath, a.binPath, a.confPath)
+	cmds := aws.MasterConfig(a.binMasterPath, a.binPath, a.confPath)
+	//	cmdStr := aws.CMDMapToString(cmds)
+
+	fmt.Println("[+] Configuring Master")
+	for idx := 0; idx < len(cmds); idx++ {
+		fmt.Println("       Exec:", idx, cmds[idx])
+		_, err := master.Run(cmds[idx])
+		if err != nil {
+			return err
+		}
+	}
+
+	addresses, syncs := aws.GenRemoteAddresses(slaveInstances)
+	a.addresses = addresses
+	slaveCmds := aws.SlaveConfig(*masterInstance.PublicIP, a.binMasterPath, a.binPath, a.confPath)
+	fmt.Println("")
+	fmt.Println("")
+	fmt.Println("[+] Configuring Slaves")
+
+	for i, addr := range addresses {
+		slaveNodeController, err := aws.NewSSHNodeContlorrer(a.pemBytes, addr, a.user, syncs[i])
+		if err != nil {
+			return err
+		}
+		slaveNodeController.Init()
+		for idx := 0; idx < len(slaveCmds); idx++ {
+			fmt.Println("     Slave ", i, "cmd: ", idx, slaveNodeController.Sync, idx, slaveCmds[idx])
+			_, err = slaveNodeController.Run(slaveCmds[idx])
+			if err != nil {
+				return err
+			}
+		}
+		slaveNodeController.Close()
+		a.slaveNodes = append(a.slaveNodes, slaveNodeController)
 	}
 	return nil
 }
@@ -82,90 +162,67 @@ func (a *awsPlatform) Cleanup() error {
 }
 
 func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
-	cons := a.c.NewConstructor()
-	parser := lib.NewCSVParser()
-	allAwsInstances := a.aws.Instances()
-	nbOfInstances := len(allAwsInstances)
 
-	if r.Nodes+1 > nbOfInstances {
-		msg := fmt.Sprintf(`Not enough EC2 instances, number of nodes to sart: %d
-            , number of avaliable EC2 instances: %d`, r.Nodes+1, nbOfInstances)
-		return errors.New(msg)
-	}
-
-	masterInstance, slaveInstances, err := makeMasterAndSlaves(allAwsInstances)
-	if err != nil {
-		return nil
-	}
-	masterAddr := aws.GenRemoteAddress(*masterInstance.PublicIP, 5000)
-
-	fmt.Println("[+] Master Instances")
-	fmt.Println("	 [-] Instance ", *masterInstance.ID, *masterInstance.State, masterAddr)
-	fmt.Println()
-	fmt.Println("[+] Avaliable Slave Instances:")
-	for i, inst := range slaveInstances {
-		fmt.Println("	 [-] Instance ", i, *inst.ID, *inst.State, *inst.PublicIP)
-	}
+	/*
+	   	if r.Nodes+1 > nbOfInstances {
+	   		msg := fmt.Sprintf(`Not enough EC2 instances, number of nodes to sart: %d
+	               , number of avaliable EC2 instances: %d`, r.Nodes+1, nbOfInstances)
+	   		return errors.New(msg)
+	   	}*/
 
 	// ++++++++++Copy master binary to master instance
 
-	// a) Copy all files to master
-	// b) Setup NFS on master
-	// c) Start master
-	// d) Setup NFS on slaves
-	// e) copy files on slaves
-	// f) start slaves
-
-	log := "log.txt"
-	masterCommand := "nohup " + a.binMasterPath + " -masterAddr " + masterAddr + " -nbOfNodes " + strconv.Itoa(len(slaveInstances))
-	fullCMD := "chmod 777 " + a.binMasterPath + " && " + masterCommand + " > " + log
-
-	fmt.Println("[+] >>>>>>> Master Command", fullCMD)
-	if err := a.runNode(masterAddr, fullCMD, a.binMasterPath); err != nil {
-		return err
-	}
-
-	// 1. Generate & write the registry file
-	addresses, syncs := aws.GenRemoteAddresses(slaveInstances)
-	nodes := lib.GenerateNodes(cons, addresses)
+	cons := a.c.NewConstructor()
+	parser := lib.NewCSVParser()
+	nodes := lib.GenerateNodes(cons, a.addresses)
 	lib.WriteAll(nodes, parser, a.regPath)
 	fmt.Println("[+] Registry file written to local storage(", r.Nodes, " nodes)")
+	fmt.Println("[+] Transfering registry file to Master")
+	a.master.CopyFiles(a.regPath)
+	cmds := aws.MsterRun(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
+
+	fmt.Println("[+] Master starting:")
+	for i := 0; i < len(cmds); i++ {
+		fmt.Println("       Exec:", i, cmds[i])
+		_, err := a.master.Run(cmds[i])
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd := aws.MsterStart(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
+	fmt.Println("       Exec:", len(cmds)+1, cmd)
+	a.master.Start(cmd)
+
 	var wg sync.WaitGroup
-
-	sameCmd := []string{
-		"chmod 777 " + a.binPath,
-		"&&",
-		a.binPath, "-config", a.confPath, "-registry", a.regPath, "-master", masterAddr}
-
 	for _, n := range nodes {
 		wg.Add(1)
-		go func(node *lib.Node, cmd []string) {
+		go func(node *lib.Node) {
 			nodeID := int(node.ID())
-			cmd = append(cmd, []string{
-				"-id", strconv.Itoa(nodeID),
-				"-sync", syncs[nodeID],
-				"-run", strconv.Itoa(idx),
-				">", log}...)
+			slaveNode := a.slaveNodes[nodeID]
 
-			cmdStr := cmdToString(cmd)
-			fmt.Println("Slave CMD:  ", cmdStr)
-			a.runNode(node.Address(), cmdStr, a.regPath, a.confPath, a.binPath)
-			//	a.runNode(node.Address(), "pwd", a.regPath, a.confPath)
+			cmds := aws.SlaveRun(a.binPath, a.confPath, a.regPath, a.masterAddr, slaveNode.Sync, "log.txt", nodeID, idx)
+
+			//		fmt.Println("Slave CMD:  ", aws.CMDMapToString(cmds))
+			if err := slaveNode.Init(); err != nil {
+				panic(err)
+			}
+
+			for i := 0; i < len(cmds); i++ {
+				fmt.Println("Running Slave", i, cmds[i])
+				_, err := slaveNode.Run(cmds[i])
+				if err != nil {
+					panic(err)
+				}
+			}
+			cmd := aws.SlaveStart(a.binPath, a.confPath, a.regPath, a.masterAddr, slaveNode.Sync, "log.txt", nodeID, idx)
+			fmt.Println("Start Slave", cmd)
+			slaveNode.Start(cmd)
+			slaveNode.Close()
 			wg.Done()
-		}(n, sameCmd)
+		}(n)
 	}
 	wg.Wait()
-	return nil
-}
-
-func (a *awsPlatform) runNode(addr, cmd string, files ...string) error {
-	awsClient, err := aws.NewSSHClient(a.pemBytes, addr, a.user)
-	if err != nil {
-		return err
-	}
-	awsClient.CopyFiles(files)
-	awsClient.Start(cmd)
-	awsClient.Close()
 	return nil
 }
 

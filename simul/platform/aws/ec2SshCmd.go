@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -10,13 +11,15 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-type sshCMD struct {
+type SshCMD struct {
 	client  *ssh.Client
-	session *ssh.Session
+	sshHost string
+	config  *ssh.ClientConfig
+	Sync    string
 }
 
 // NewSSHClient creates CMD backed by ssh
-func NewSSHClient(pemBytes []byte, host string, user string) (CMD, error) {
+func NewSSHNodeContlorrer(pemBytes []byte, host string, user string, sync string) (*SshCMD, error) {
 	sshHost, err := sshHostAddr(host)
 	if err != nil {
 		return nil, err
@@ -31,19 +34,20 @@ func NewSSHClient(pemBytes []byte, host string, user string) (CMD, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	conn, err := ssh.Dial("tcp", sshHost, config)
+	return &SshCMD{sshHost: sshHost, config: config, Sync: sync}, nil
+}
+
+func (sshCMD *SshCMD) Init() error {
+	conn, err := ssh.Dial("tcp", sshCMD.sshHost, sshCMD.config)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	session, err := conn.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	return &sshCMD{conn, session}, nil
+	sshCMD.client = conn
+	return nil
 }
 
 //CopyFiles cipies files from local to remote host using sftp
-func (sshCMD *sshCMD) CopyFiles(files []string) error {
+func (sshCMD *SshCMD) CopyFiles(files ...string) error {
 	// create new SFTP client
 	sftpClient, err := sftp.NewClient(sshCMD.client)
 	if err != nil {
@@ -80,36 +84,50 @@ func copyFile(sftpClient *sftp.Client, file string) error {
 }
 
 //Run runs command on a remote host using ssh and waits for output
-func (sshCMD *sshCMD) Run(command string) (string, error) {
-	fmt.Println(">>>> Runnning >>>> ", command)
-	//var stdoutBuf bytes.Buffer
-	//	sshCMD.session.Stdout = &stdoutBuf
-	err := sshCMD.session.Run(command)
+func (sshCMD *SshCMD) Run(command string) (string, error) {
+	//fmt.Println(">>>> Runnning >>>> ", command)
+	var stdoutBuf bytes.Buffer
+	session, err := sshCMD.client.NewSession()
+
+	session.Stdout = &stdoutBuf
 	if err != nil {
-		fmt.Println("ERRRR")
 		return "", err
 	}
-	//fmt.Println("OUT: ", stdoutBuf.String())
-	return "", nil
+
+	defer session.Close()
+
+	err = session.Run(command)
+	if err != nil {
+		fmt.Println("SSH Run error ", err)
+		return "", err
+	}
+	return stdoutBuf.String(), nil
 }
 
 //Run runs command on a remote host using ssh
-func (sshCMD *sshCMD) Start(command string) (string, error) {
-	fmt.Println(">>>> Runnning >>>> ", command)
-	//var stdoutBuf bytes.Buffer
-	//	sshCMD.session.Stdout = &stdoutBuf
-	err := sshCMD.session.Start(command)
+func (sshCMD *SshCMD) Start(command string) (string, error) {
+	//fmt.Println(">>>> Runnning >>>> ", command)
+	var stdoutBuf bytes.Buffer
+	session, err := sshCMD.client.NewSession()
+
+	session.Stdout = &stdoutBuf
 	if err != nil {
-		fmt.Println("ERRRR")
 		return "", err
 	}
-	//fmt.Println("OUT: ", stdoutBuf.String())
+
+	defer session.Close()
+
+	err = session.Start(command)
+	if err != nil {
+		fmt.Println("ERRRR ", err)
+		return "", err
+	}
+	fmt.Println("OUT: ", stdoutBuf.String())
 	return "", nil
 }
 
 //Close closes ssh session
-func (sshCMD *sshCMD) Close() {
-	sshCMD.session.Close()
+func (sshCMD *SshCMD) Close() {
 	sshCMD.client.Close()
 }
 

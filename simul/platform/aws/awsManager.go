@@ -21,8 +21,8 @@ type Instance struct {
 type Manager interface {
 	// Instances list avaliable instances in any state
 	Instances() []Instance
-	// StartInstances starts all avaliable instances
 	RefreshInstances() ([]Instance, error)
+	// StartInstances starts all avaliable instances
 	StartInstances() error
 	// StopInstances stops all avaliable instances
 	StopInstances() error
@@ -62,20 +62,18 @@ func WaitUntilAllInstancesRunning(a Manager, delay func()) (int, error) {
 	if allRunning {
 		return 0, nil
 	}
-	trais := 0
+	tries := 0
 
 	for {
-		trais++
+		tries++
 		delay()
-		fmt.Println("Waiting for amazon instances to start")
-
 		allInstances, err := a.RefreshInstances()
 		if err != nil {
-			return trais, err
+			return tries, err
 		}
 		allRunning = allInstancesRunning(allInstances)
 		if allRunning {
-			return trais, nil
+			return tries, nil
 		}
 	}
 }
