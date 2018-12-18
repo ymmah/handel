@@ -9,15 +9,20 @@ type NodeController interface {
 	// "/tmp/aws.csv" on the remote host
 	CopyFiles(files ...string) error
 	// NodeIdentity returns the handel Identity of this node
-	Node() *lib.Node
+	Node() NodeAndSync
 	//SyncAddr returns sync address
 	SyncAddr() string
 	// Run runs command on a remote node, for example Run("ls -l") and blocks until completion
 	Run(command string) (string, error)
 	// Start runs command on a remote node, doesn't block
-	Start(command string) (string, error)
+	Start(command string) error
 	// Init inits connection to the remote node
 	Init() error
 	// Close
 	Close()
+}
+
+type NodeAndSync struct {
+	*lib.Node
+	Sync string
 }

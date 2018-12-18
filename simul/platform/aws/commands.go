@@ -16,10 +16,12 @@ type Commands struct {
 	RegPath       string
 }
 
+// MasterCommands commands invoked on master node
 type MasterCommands struct {
 	Commands
 }
 
+//SlaveCommands commands invoked on slave node
 type SlaveCommands struct {
 	Commands
 }
@@ -86,7 +88,7 @@ func (c SlaveCommands) CopyRegistryFileFromSharedDirToLocalStorage() map[int]str
 	return cmds
 }
 
-// Start starts master executable
+// Start starts executable
 func (c SlaveCommands) Start(masterAddr, sync string, id, run int) string {
 	return "nohup " + c.SlaveBinPath + " -config " + c.ConfPath + " -registry " + c.RegPath + " -master " + masterAddr + " -id " + strconv.Itoa(id) + " -sync " + sync + " -run " + strconv.Itoa(run) + " > " + logFile
 }

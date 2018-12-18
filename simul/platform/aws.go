@@ -20,7 +20,7 @@ type awsPlatform struct {
 	user          string
 	pemBytes      []byte
 	master        aws.NodeController
-	allSlaveNodes []aws.NodeController
+	allSlaveNodes []aws.NodeAndSync
 	masterCMDS    aws.MasterCommands
 	slaveCMDS     aws.SlaveCommands
 }
@@ -80,9 +80,9 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 
 	cons := c.NewConstructor()
 	masterAddr := aws.GenRemoteAddress(*masterInstance.PublicIP, 5000)
-	node := lib.GenerateNode(cons, -1, masterAddr)
-	master, err := aws.NewSSHNodeContlorrer(node, a.pemBytes, a.user, "")
-
+	masterNode := lib.GenerateNode(cons, -1, masterAddr)
+	nodeAndSync := aws.NodeAndSync{masterNode, ""}
+	master, err := aws.NewSSHNodeContlorrer(nodeAndSync, a.pemBytes, a.user)
 	if err != nil {
 		return err
 	}
@@ -124,26 +124,40 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 	slaveCmds := a.slaveCMDS.Configure(*masterInstance.PublicIP)
 	fmt.Println("")
 	fmt.Println("")
-	fmt.Println("[+] Configuring Slaves")
+	fmt.Println("[+] Configuring Slaves:")
 
 	addresses, syncs := aws.GenRemoteAddresses(slaveInstances)
+	var wg sync.WaitGroup
+
 	for i, addr := range addresses {
 		node := lib.GenerateNode(cons, i, addr)
-		slaveNodeController, err := aws.NewSSHNodeContlorrer(node, a.pemBytes, a.user, syncs[i])
+		nodeAndSync := aws.NodeAndSync{node, syncs[i]}
+		wg.Add(1)
+		go func(slave aws.NodeAndSync) {
+			fmt.Println("    -Slave", slave.Address())
+			slaveNodeController, err := aws.NewSSHNodeContlorrer(slave, a.pemBytes, a.user)
+			if err != nil {
+				panic(err)
+			}
+			configureSlave(slaveNodeController, slaveCmds)
+			wg.Done()
+		}(nodeAndSync)
+		a.allSlaveNodes = append(a.allSlaveNodes, nodeAndSync)
+	}
+	wg.Wait()
+	return nil
+}
 
+func configureSlave(slaveNodeController aws.NodeController, slaveCmds map[int]string) error {
+	slaveNodeController.Init()
+	defer slaveNodeController.Close()
+
+	for idx := 0; idx < len(slaveCmds); idx++ {
+		//	fmt.Println("     Slave ", i, "cmd: ", idx, slaveCmds[idx])
+		_, err := slaveNodeController.Run(slaveCmds[idx])
 		if err != nil {
 			return err
 		}
-		slaveNodeController.Init()
-		for idx := 0; idx < len(slaveCmds); idx++ {
-			fmt.Println("     Slave ", i, "cmd: ", idx, slaveCmds[idx])
-			_, err = slaveNodeController.Run(slaveCmds[idx])
-			if err != nil {
-				return err
-			}
-		}
-		slaveNodeController.Close()
-		a.allSlaveNodes = append(a.allSlaveNodes, slaveNodeController)
 	}
 	return nil
 }
@@ -183,25 +197,8 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 	var wg sync.WaitGroup
 	for _, n := range slaveNodes {
 		wg.Add(1)
-		go func(slaveNode aws.NodeController) {
-
-			cpyFiles := a.slaveCMDS.CopyRegistryFileFromSharedDirToLocalStorage()
-			if err := slaveNode.Init(); err != nil {
-				panic(err)
-			}
-
-			for i := 0; i < len(cpyFiles); i++ {
-				fmt.Println("Running Slave", i, cpyFiles[i])
-				_, err := slaveNode.Run(cpyFiles[i])
-				if err != nil {
-					panic(err)
-				}
-			}
-			nodeID := int(slaveNode.Node().ID())
-			startSlave := a.slaveCMDS.Start(a.master.Node().Address(), slaveNode.SyncAddr(), nodeID, idx)
-			fmt.Println("Start Slave", startSlave)
-			slaveNode.Start(startSlave)
-			slaveNode.Close()
+		go func(slaveNode aws.NodeAndSync) {
+			a.startSlave(slaveNode, idx)
 			wg.Done()
 		}(n)
 	}
@@ -209,15 +206,41 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 	return nil
 }
 
+func (a *awsPlatform) startSlave(nodeAndSync aws.NodeAndSync, idx int) {
+	cpyFiles := a.slaveCMDS.CopyRegistryFileFromSharedDirToLocalStorage()
+	slaveController, err := aws.NewSSHNodeContlorrer(nodeAndSync, a.pemBytes, a.user)
+
+	if err != nil {
+		panic(err)
+	}
+	if err := slaveController.Init(); err != nil {
+		panic(err)
+	}
+
+	for i := 0; i < len(cpyFiles); i++ {
+		fmt.Println("Running Slave", i, cpyFiles[i])
+		_, err := slaveController.Run(cpyFiles[i])
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	nodeID := int(nodeAndSync.ID())
+	startSlave := a.slaveCMDS.Start(a.master.Node().Address(), nodeAndSync.Sync, nodeID, idx)
+	fmt.Println("Start Slave", startSlave)
+	slaveController.Start(startSlave)
+	slaveController.Close()
+}
+
 func cmdToString(cmd []string) string {
 	return strings.Join(cmd[:], " ")
 }
 
-func writeRegFile(slaves []aws.NodeController, regPath string) {
+func writeRegFile(slaves []aws.NodeAndSync, regPath string) {
 	parser := lib.NewCSVParser()
 	var nodes []*lib.Node
 	for _, slave := range slaves {
-		nodes = append(nodes, slave.Node())
+		nodes = append(nodes, slave.Node)
 	}
 	lib.WriteAll(nodes, parser, regPath)
 }

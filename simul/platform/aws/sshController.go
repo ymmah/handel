@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 
-	"github.com/ConsenSys/handel/simul/lib"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -17,12 +16,11 @@ type sshController struct {
 	client  *ssh.Client
 	sshHost string
 	config  *ssh.ClientConfig
-	sync    string
-	node    *lib.Node
+	node    NodeAndSync
 }
 
 // NewSSHClient creates CMD backed by ssh
-func NewSSHNodeContlorrer(node *lib.Node, pemBytes []byte, user, sync string) (NodeController, error) {
+func NewSSHNodeContlorrer(node NodeAndSync, pemBytes []byte, user string) (NodeController, error) {
 	sshHost, err := sshHostAddr(node.Address())
 	if err != nil {
 		return nil, err
@@ -37,15 +35,15 @@ func NewSSHNodeContlorrer(node *lib.Node, pemBytes []byte, user, sync string) (N
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	return &sshController{node: node, sshHost: sshHost, config: config, sync: sync}, nil
+	return &sshController{node: node, sshHost: sshHost, config: config}, nil
 }
 
-func (sshCMD *sshController) Node() *lib.Node {
+func (sshCMD *sshController) Node() NodeAndSync {
 	return sshCMD.node
 }
 
 func (sshCMD *sshController) SyncAddr() string {
-	return sshCMD.sync
+	return sshCMD.node.Sync
 }
 
 func (sshCMD *sshController) Init() error {
@@ -116,14 +114,12 @@ func (sshCMD *sshController) Run(command string) (string, error) {
 }
 
 //Run runs command on a remote host using ssh
-func (sshCMD *sshController) Start(command string) (string, error) {
-	//fmt.Println(">>>> Runnning >>>> ", command)
-	var stdoutBuf bytes.Buffer
+func (sshCMD *sshController) Start(command string) error {
 	session, err := sshCMD.client.NewSession()
 
-	session.Stdout = &stdoutBuf
+	//session.Stdout = &stdoutBuf
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	defer session.Close()
@@ -131,10 +127,9 @@ func (sshCMD *sshController) Start(command string) (string, error) {
 	err = session.Start(command)
 	if err != nil {
 		fmt.Println("ERRRR ", err)
-		return "", err
+		return err
 	}
-	fmt.Println("OUT: ", stdoutBuf.String())
-	return "", nil
+	return nil
 }
 
 //Close closes ssh session
