@@ -7,22 +7,23 @@ import (
 	"net"
 	"os"
 
+	"github.com/ConsenSys/handel/simul/lib"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
 //TODO put handel Node here
-type SshCMD struct {
-	client         *ssh.Client
-	sshHost        string
-	HandelNodeAddr string
-	config         *ssh.ClientConfig
-	Sync           string
+type sshController struct {
+	client  *ssh.Client
+	sshHost string
+	config  *ssh.ClientConfig
+	sync    string
+	node    *lib.Node
 }
 
 // NewSSHClient creates CMD backed by ssh
-func NewSSHNodeContlorrer(pemBytes []byte, handelNodeAddr, user, sync string) (*SshCMD, error) {
-	sshHost, err := sshHostAddr(handelNodeAddr)
+func NewSSHNodeContlorrer(node *lib.Node, pemBytes []byte, user, sync string) (NodeController, error) {
+	sshHost, err := sshHostAddr(node.Address())
 	if err != nil {
 		return nil, err
 	}
@@ -36,10 +37,18 @@ func NewSSHNodeContlorrer(pemBytes []byte, handelNodeAddr, user, sync string) (*
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	return &SshCMD{sshHost: sshHost, config: config, HandelNodeAddr: handelNodeAddr, Sync: sync}, nil
+	return &sshController{node: node, sshHost: sshHost, config: config, sync: sync}, nil
 }
 
-func (sshCMD *SshCMD) Init() error {
+func (sshCMD *sshController) Node() *lib.Node {
+	return sshCMD.node
+}
+
+func (sshCMD *sshController) SyncAddr() string {
+	return sshCMD.sync
+}
+
+func (sshCMD *sshController) Init() error {
 	conn, err := ssh.Dial("tcp", sshCMD.sshHost, sshCMD.config)
 	if err != nil {
 		return err
@@ -49,7 +58,7 @@ func (sshCMD *SshCMD) Init() error {
 }
 
 //CopyFiles cipies files from local to remote host using sftp
-func (sshCMD *SshCMD) CopyFiles(files ...string) error {
+func (sshCMD *sshController) CopyFiles(files ...string) error {
 	// create new SFTP client
 	sftpClient, err := sftp.NewClient(sshCMD.client)
 	if err != nil {
@@ -86,7 +95,7 @@ func copyFile(sftpClient *sftp.Client, file string) error {
 }
 
 //Run runs command on a remote host using ssh and waits for output
-func (sshCMD *SshCMD) Run(command string) (string, error) {
+func (sshCMD *sshController) Run(command string) (string, error) {
 	//fmt.Println(">>>> Runnning >>>> ", command)
 	var stdoutBuf bytes.Buffer
 	session, err := sshCMD.client.NewSession()
@@ -107,7 +116,7 @@ func (sshCMD *SshCMD) Run(command string) (string, error) {
 }
 
 //Run runs command on a remote host using ssh
-func (sshCMD *SshCMD) Start(command string) (string, error) {
+func (sshCMD *sshController) Start(command string) (string, error) {
 	//fmt.Println(">>>> Runnning >>>> ", command)
 	var stdoutBuf bytes.Buffer
 	session, err := sshCMD.client.NewSession()
@@ -129,7 +138,7 @@ func (sshCMD *SshCMD) Start(command string) (string, error) {
 }
 
 //Close closes ssh session
-func (sshCMD *SshCMD) Close() {
+func (sshCMD *sshController) Close() {
 	sshCMD.client.Close()
 }
 

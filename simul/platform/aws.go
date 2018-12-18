@@ -15,20 +15,14 @@ import (
 
 type awsPlatform struct {
 	aws           aws.Manager
-	c             *lib.Config
-	regPath       string
-	binPath       string
-	binMasterPath string
-	confPath      string
 	targetSystem  string
 	targetArch    string
 	user          string
 	pemBytes      []byte
-	master        *aws.SshCMD
-	slaveNodes    []*aws.SshCMD
-	addresses     []string
-	masterAddr    string
-	CMDS          aws.Commands
+	master        aws.NodeController
+	allSlaveNodes []aws.NodeController
+	masterCMDS    aws.MasterCommands
+	slaveCMDS     aws.SlaveCommands
 }
 
 func NewAws(aws aws.Manager, pemFile string) Platform {
@@ -59,20 +53,17 @@ func (a *awsPlatform) pack(path string, c *lib.Config, binPath string) error {
 }
 
 func (a *awsPlatform) Configure(c *lib.Config) error {
-	a.c = c
-	a.regPath = "/tmp/aws.csv"
-	a.binPath = "/tmp/nodeAWS"
-	a.binMasterPath = "/tmp/masterAWS"
-	a.confPath = "/tmp/aws.conf"
 
-	CMDS := aws.NewCommands(a.binMasterPath, a.binPath, a.confPath, a.regPath)
-	a.CMDS = CMDS
+	CMDS := aws.NewCommands("/tmp/masterAWS", "/tmp/nodeAWS", "/tmp/aws.conf", "/tmp/aws.csv")
+	a.masterCMDS = aws.MasterCommands{CMDS}
+	a.slaveCMDS = aws.SlaveCommands{CMDS}
+
 	// Compile binaries
-	a.pack("github.com/ConsenSys/handel/simul/node", c, a.binPath)
-	a.pack("github.com/ConsenSys/handel/simul/master", c, a.binMasterPath)
+	a.pack("github.com/ConsenSys/handel/simul/node", c, CMDS.SlaveBinPath)
+	a.pack("github.com/ConsenSys/handel/simul/master", c, CMDS.MasterBinPath)
 
 	// write config
-	if err := c.WriteTo(a.confPath); err != nil {
+	if err := c.WriteTo(CMDS.ConfPath); err != nil {
 		return err
 	}
 
@@ -87,13 +78,14 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 		return err
 	}
 
+	cons := c.NewConstructor()
 	masterAddr := aws.GenRemoteAddress(*masterInstance.PublicIP, 5000)
-	master, err := aws.NewSSHNodeContlorrer(a.pemBytes, masterAddr, a.user, "")
+	node := lib.GenerateNode(cons, -1, masterAddr)
+	master, err := aws.NewSSHNodeContlorrer(node, a.pemBytes, a.user, "")
 
 	if err != nil {
 		return err
 	}
-	a.masterAddr = masterAddr
 	a.master = master
 
 	for {
@@ -115,9 +107,9 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 		fmt.Println("	 [-] Instance ", i, *inst.ID, *inst.State, *inst.PublicIP)
 	}
 
-	fmt.Println("[+] Transfering files to Master:", a.binMasterPath, a.binPath, a.confPath)
-	master.CopyFiles(a.binMasterPath, a.binPath, a.confPath)
-	cmds := CMDS.ConfifureMaster()
+	fmt.Println("[+] Transfering files to Master:", CMDS.MasterBinPath, CMDS.SlaveBinPath, CMDS.ConfPath)
+	master.CopyFiles(CMDS.MasterBinPath, CMDS.SlaveBinPath, CMDS.ConfPath)
+	cmds := a.masterCMDS.Configure()
 	//	cmdStr := aws.CMDMapToString(cmds)
 
 	fmt.Println("[+] Configuring Master")
@@ -129,28 +121,29 @@ func (a *awsPlatform) Configure(c *lib.Config) error {
 		}
 	}
 
-	addresses, syncs := aws.GenRemoteAddresses(slaveInstances)
-	a.addresses = addresses
-	slaveCmds := aws.SlaveConfig(*masterInstance.PublicIP, a.binMasterPath, a.binPath, a.confPath)
+	slaveCmds := a.slaveCMDS.Configure(*masterInstance.PublicIP)
 	fmt.Println("")
 	fmt.Println("")
 	fmt.Println("[+] Configuring Slaves")
 
+	addresses, syncs := aws.GenRemoteAddresses(slaveInstances)
 	for i, addr := range addresses {
-		slaveNodeController, err := aws.NewSSHNodeContlorrer(a.pemBytes, addr, a.user, syncs[i])
+		node := lib.GenerateNode(cons, i, addr)
+		slaveNodeController, err := aws.NewSSHNodeContlorrer(node, a.pemBytes, a.user, syncs[i])
+
 		if err != nil {
 			return err
 		}
 		slaveNodeController.Init()
 		for idx := 0; idx < len(slaveCmds); idx++ {
-			fmt.Println("     Slave ", i, "cmd: ", idx, slaveNodeController.Sync, idx, slaveCmds[idx])
+			fmt.Println("     Slave ", i, "cmd: ", idx, slaveCmds[idx])
 			_, err = slaveNodeController.Run(slaveCmds[idx])
 			if err != nil {
 				return err
 			}
 		}
 		slaveNodeController.Close()
-		a.slaveNodes = append(a.slaveNodes, slaveNodeController)
+		a.allSlaveNodes = append(a.allSlaveNodes, slaveNodeController)
 	}
 	return nil
 }
@@ -161,64 +154,53 @@ func (a *awsPlatform) Cleanup() error {
 
 func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 
-	/*
-	   	if r.Nodes+1 > nbOfInstances {
-	   		msg := fmt.Sprintf(`Not enough EC2 instances, number of nodes to sart: %d
-	               , number of avaliable EC2 instances: %d`, r.Nodes+1, nbOfInstances)
-	   		return errors.New(msg)
-	   	}*/
+	nbOfInstances := len(a.allSlaveNodes)
+	if r.Nodes > nbOfInstances {
+		msg := fmt.Sprintf(`Not enough EC2 instances, number of nodes to sart: %d
+	               , number of avaliable EC2 instances: %d`, r.Nodes, nbOfInstances)
+		return errors.New(msg)
+	}
+	slaveNodes := a.allSlaveNodes[0:r.Nodes]
 
-	// ++++++++++Copy master binary to master instance
-
-	cons := a.c.NewConstructor()
-	parser := lib.NewCSVParser()
-	//TODO limit
-	// take addr form slaves and create Node
-	// set node and Node in slave
-	nodes := lib.GenerateNodes(cons, a.addresses)
-	lib.WriteAll(nodes, parser, a.regPath)
+	writeRegFile(slaveNodes, a.masterCMDS.RegPath)
 	fmt.Println("[+] Registry file written to local storage(", r.Nodes, " nodes)")
 	fmt.Println("[+] Transfering registry file to Master")
-	a.master.CopyFiles(a.regPath)
-	cmds := a.CMDS.CpyToSharedDir() //aws.MsterRun(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
-
+	a.master.CopyFiles(a.masterCMDS.RegPath)
+	shareRegistryFile := a.masterCMDS.ShareRegistryFile()
 	fmt.Println("[+] Master handel node:")
-	for i := 0; i < len(cmds); i++ {
-		fmt.Println("       Exec:", i, cmds[i])
-		_, err := a.master.Run(cmds[i])
+	for i := 0; i < len(shareRegistryFile); i++ {
+		fmt.Println("       Exec:", i, shareRegistryFile[i])
+		_, err := a.master.Run(shareRegistryFile[i])
 		if err != nil {
 			return err
 		}
 	}
 
-	cmd := a.CMDS.MsterStart(a.masterAddr, len(nodes)) //aws.MsterStart(a.binMasterPath, a.regPath, a.masterAddr, len(nodes))
-	fmt.Println("       Exec:", len(cmds)+1, cmd)
-	a.master.Start(cmd)
+	masterStart := a.masterCMDS.Start(a.master.Node().Address(), r.Nodes)
+	fmt.Println("       Exec:", len(masterStart)+1, masterStart)
+	a.master.Start(masterStart)
 
 	var wg sync.WaitGroup
-	for _, n := range nodes {
+	for _, n := range slaveNodes {
 		wg.Add(1)
-		go func(node *lib.Node) {
-			nodeID := int(node.ID())
-			slaveNode := a.slaveNodes[nodeID]
+		go func(slaveNode aws.NodeController) {
 
-			cmds := aws.SlaveRun(a.binPath, a.confPath, a.regPath, a.masterAddr, slaveNode.Sync, "log.txt", nodeID, idx)
-
-			//		fmt.Println("Slave CMD:  ", aws.CMDMapToString(cmds))
+			cpyFiles := a.slaveCMDS.CopyRegistryFileFromSharedDirToLocalStorage()
 			if err := slaveNode.Init(); err != nil {
 				panic(err)
 			}
 
-			for i := 0; i < len(cmds); i++ {
-				fmt.Println("Running Slave", i, cmds[i])
-				_, err := slaveNode.Run(cmds[i])
+			for i := 0; i < len(cpyFiles); i++ {
+				fmt.Println("Running Slave", i, cpyFiles[i])
+				_, err := slaveNode.Run(cpyFiles[i])
 				if err != nil {
 					panic(err)
 				}
 			}
-			cmd := aws.SlaveStart(a.binPath, a.confPath, a.regPath, a.masterAddr, slaveNode.Sync, "log.txt", nodeID, idx)
-			fmt.Println("Start Slave", cmd)
-			slaveNode.Start(cmd)
+			nodeID := int(slaveNode.Node().ID())
+			startSlave := a.slaveCMDS.Start(a.master.Node().Address(), slaveNode.SyncAddr(), nodeID, idx)
+			fmt.Println("Start Slave", startSlave)
+			slaveNode.Start(startSlave)
 			slaveNode.Close()
 			wg.Done()
 		}(n)
@@ -229,6 +211,15 @@ func (a *awsPlatform) Start(idx int, r *lib.RunConfig) error {
 
 func cmdToString(cmd []string) string {
 	return strings.Join(cmd[:], " ")
+}
+
+func writeRegFile(slaves []aws.NodeController, regPath string) {
+	parser := lib.NewCSVParser()
+	var nodes []*lib.Node
+	for _, slave := range slaves {
+		nodes = append(nodes, slave.Node())
+	}
+	lib.WriteAll(nodes, parser, regPath)
 }
 
 func makeMasterAndSlaves(allAwsInstances []aws.Instance) (*aws.Instance, []aws.Instance, error) {
